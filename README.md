@@ -5,8 +5,12 @@ This project includes a Python script designed to toggle the weight of DNS recor
 ## Features
 
 - **Dynamic DNS Weight Adjustment**: Automatically adjust the weight of DNS records to reroute traffic between primary and secondary resources based on system health.
-- **Logging**: Comprehensive logging for tracking the script's operation and errors.
+- **Comprehensive Logging**: Structured logging for tracking operations and debugging issues.
 - **AWS Integration**: Designed to work with AWS Lambda, Route53, and SNS messages.
+- **Robust Error Handling**: Validates environment variables, SNS messages, and handles API errors gracefully.
+- **Type Safety**: Full type hints for better IDE support and error detection.
+- **Pagination Support**: Handles large Route53 hosted zones with automatic pagination.
+- **Well Tested**: Comprehensive unit test suite with 80%+ code coverage.
 
 ## Prerequisites
 
@@ -71,7 +75,7 @@ Ensure that the Lambda function has the necessary permissions to modify Route53 
 
 ## Environment Variables
 
-Set the following local environment variables. You can use the example.env, just rename to .env and source it. FUNCTIONS_NAME is the name of the lambda function you created in the AWS console.
+Set the following local environment variables. You can use the example.env, just rename to .env and source it. FUNCTION_NAME is the name of the lambda function you created in the AWS console.
 
 - `FUNCTION_NAME=test-failover-dns`
 - `SOURCE_FILE=lambda_function.py`
@@ -86,6 +90,46 @@ Set the following environment variables in your Lambda configuration:
 - `SECONDARY_IDENTIFIER`: Identifier for the secondary resource.
 - `RECORD_TYPE`: The type of DNS record, e.g., A, AAAA, CNAME.
 
+## Development
+
+### Setup Development Environment
+
+1. Clone the repository
+2. Install development dependencies:
+   ```bash
+   pip install -r requirements-dev.txt
+   ```
+
+### Running Tests
+
+Run the unit tests with coverage:
+```bash
+make test
+```
+
+Or run pytest directly:
+```bash
+pytest
+```
+
+### Code Quality
+
+Run linting and type checks:
+```bash
+make lint
+```
+
+Individual tools:
+```bash
+black lambda_function.py test_lambda_function.py  # Format code
+flake8 lambda_function.py                         # Check style
+mypy lambda_function.py                           # Type checking
+```
+
+### Test Coverage
+
+The project includes comprehensive unit tests with 80%+ coverage requirement. Coverage reports are generated in HTML format in the `htmlcov/` directory.
+
 ## Deployment
 
 1. Package the script and any dependencies into a deployment package.
@@ -93,6 +137,23 @@ Set the following environment variables in your Lambda configuration:
 3. Configure the trigger to be the desired CloudWatch alarm.
 4. Set the necessary environment variables in the Lambda configuration.
 5. Upload and deploy the package.
+
+### Quick Deployment
+
+Using the Makefile:
+```bash
+# Create .env file from example
+cp example.env .env
+# Edit .env with your values
+
+# Deploy to AWS
+make deploy
+
+# Or step by step
+make zip     # Create deployment package
+make deploy  # Upload to Lambda
+make clean   # Clean up artifacts
+```
 
 ## Usage
 

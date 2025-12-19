@@ -17,6 +17,26 @@ terraform.tfstate.backup
 *.zip
 .env
 
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+virtualenv/
+.virtualenv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Type checking
+.mypy_cache/
+.pytype/
+.pyre/
+
 # Node artifact files
 node_modules/
 dist/
