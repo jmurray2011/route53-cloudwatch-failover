@@ -1,6 +1,6 @@
-# AWS Route 53 Weighted Routing Lambda
+# AWS Route 53 CloudWatch Failover
 
-This project includes a Python script designed to toggle the weight of DNS records using AWS Route 53's API. The script is meant to be deployed as an AWS Lambda function, triggered by CloudWatch alarms, responding to changes in system health or other criteria.
+This project provides automated DNS failover for AWS Route 53 using weighted routing policies. The Lambda function is triggered by CloudWatch alarms and automatically adjusts DNS record weights to route traffic between primary and secondary resources based on health status.
 
 ## Features
 
