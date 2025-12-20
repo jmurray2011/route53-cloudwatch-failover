@@ -2,7 +2,8 @@ import logging
 import boto3
 import json
 import os
-from typing import Optional, Tuple, Dict, Any
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Any
 
 # Setup logging for Lambda
 logger = logging.getLogger(__name__)
@@ -10,6 +11,19 @@ logger.setLevel(logging.INFO)
 
 # Initialize AWS clients
 route53_client = boto3.client("route53")
+
+
+@dataclass
+class RecordInfo:
+    """Information about a DNS record for weight updates."""
+
+    is_alias: bool
+    # For ALIAS records
+    alias_dns_name: Optional[str] = None
+    alias_hosted_zone_id: Optional[str] = None
+    # For standard records (A, AAAA, CNAME)
+    resource_records: Optional[List[str]] = None
+    ttl: Optional[int] = None
 
 
 def validate_environment_variables() -> Dict[str, str]:
@@ -55,11 +69,13 @@ def validate_environment_variables() -> Dict[str, str]:
     return env_vars
 
 
-def get_alias_target_dns_name(
+def get_record_info(
     hosted_zone_id: str, record_set_name: str, identifier: str, record_type: str
-) -> Optional[Tuple[str, str]]:
+) -> Optional[RecordInfo]:
     """
-    Retrieve the DNS name and hosted zone ID of the Alias target for a DNS record.
+    Retrieve information about a DNS record for weight updates.
+
+    Supports both ALIAS records and standard records (A, AAAA, CNAME).
 
     Args:
         hosted_zone_id: The ID of the hosted zone that contains the DNS records.
@@ -68,7 +84,7 @@ def get_alias_target_dns_name(
         record_type: The type of the DNS record set to retrieve.
 
     Returns:
-        A tuple of (DNSName, HostedZoneId) if found, None otherwise.
+        RecordInfo object if found, None otherwise.
     """
     try:
         # Use paginator to handle large record sets
@@ -90,20 +106,33 @@ def get_alias_target_dns_name(
                     record_set["Name"] == record_set_name
                     and record_set.get("SetIdentifier") == identifier
                     and record_set["Type"] == record_type
-                    and "AliasTarget" in record_set
                 ):
-
-                    alias_target = record_set["AliasTarget"]
-                    return alias_target["DNSName"], alias_target["HostedZoneId"]
+                    # Check if it's an ALIAS record
+                    if "AliasTarget" in record_set:
+                        alias_target = record_set["AliasTarget"]
+                        return RecordInfo(
+                            is_alias=True,
+                            alias_dns_name=alias_target["DNSName"],
+                            alias_hosted_zone_id=alias_target["HostedZoneId"],
+                        )
+                    # Standard record (A, AAAA, CNAME, etc.)
+                    elif "ResourceRecords" in record_set:
+                        return RecordInfo(
+                            is_alias=False,
+                            resource_records=[
+                                rr["Value"] for rr in record_set["ResourceRecords"]
+                            ],
+                            ttl=record_set.get("TTL", 300),
+                        )
 
         logger.error(
-            f"Alias target not found for {record_set_name} with identifier '{identifier}' "
+            f"Record not found for {record_set_name} with identifier '{identifier}' "
             f"and type {record_type}."
         )
         return None
 
     except Exception as e:
-        logger.error(f"Error retrieving alias target DNS name: {e}", exc_info=True)
+        logger.error(f"Error retrieving record info: {e}", exc_info=True)
         return None
 
 
@@ -113,11 +142,12 @@ def set_dns_record_weight(
     record_type: str,
     identifier: str,
     weight: int,
-    alias_dns_name: str,
-    alias_hosted_zone_id: str,
+    record_info: RecordInfo,
 ) -> bool:
     """
-    Set the weight of a DNS record set (assumes it's an Alias).
+    Set the weight of a DNS record set.
+
+    Supports both ALIAS records and standard records (A, AAAA, CNAME).
 
     Args:
         hosted_zone_id: The ID of the hosted zone.
@@ -125,31 +155,35 @@ def set_dns_record_weight(
         record_type: The type of DNS record.
         identifier: A string identifying the DNS record set.
         weight: The new weight for the DNS record.
-        alias_dns_name: The DNS name of the Alias target.
-        alias_hosted_zone_id: The hosted zone ID of the Alias target.
+        record_info: RecordInfo object containing record details.
 
     Returns:
         True if successful, False otherwise.
     """
     try:
-        # Construct the change batch for updating the DNS weight
-        change_batch = {
-            "Changes": [
-                {
-                    "Action": "UPSERT",
-                    "ResourceRecordSet": {
-                        "Name": record_set_name,
-                        "Type": record_type,
-                        "Weight": weight,
-                        "SetIdentifier": identifier,
-                        "AliasTarget": {
-                            "DNSName": alias_dns_name,
-                            "HostedZoneId": alias_hosted_zone_id,
-                            "EvaluateTargetHealth": False,
-                        },
-                    },
-                }
+        # Build the base record set
+        resource_record_set: Dict[str, Any] = {
+            "Name": record_set_name,
+            "Type": record_type,
+            "Weight": weight,
+            "SetIdentifier": identifier,
+        }
+
+        # Add type-specific fields
+        if record_info.is_alias:
+            resource_record_set["AliasTarget"] = {
+                "DNSName": record_info.alias_dns_name,
+                "HostedZoneId": record_info.alias_hosted_zone_id,
+                "EvaluateTargetHealth": False,
+            }
+        else:
+            resource_record_set["TTL"] = record_info.ttl or 300
+            resource_record_set["ResourceRecords"] = [
+                {"Value": value} for value in (record_info.resource_records or [])
             ]
+
+        change_batch = {
+            "Changes": [{"Action": "UPSERT", "ResourceRecordSet": resource_record_set}]
         }
 
         # Update the DNS record set
@@ -260,29 +294,25 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     logger.info(f"Processing alarm state: {new_state}")
 
-    # Retrieve the DNS name of the Alias targets
-    pri_alias_info = get_alias_target_dns_name(
+    # Retrieve record information for both primary and secondary
+    pri_record_info = get_record_info(
         hosted_zone_id, record_set_name, primary_identifier, record_type
     )
-    sec_alias_info = get_alias_target_dns_name(
+    sec_record_info = get_record_info(
         hosted_zone_id, record_set_name, secondary_identifier, record_type
     )
 
-    # Check if both alias targets were found
-    if not pri_alias_info or not sec_alias_info:
-        error_msg = "Failed to retrieve alias DNS information for "
-        if not pri_alias_info:
+    # Check if both records were found
+    if not pri_record_info or not sec_record_info:
+        error_msg = "Failed to retrieve record information for "
+        if not pri_record_info:
             error_msg += f"primary identifier '{primary_identifier}'"
-        if not sec_alias_info:
-            separator = " and " if not pri_alias_info else ""
+        if not sec_record_info:
+            separator = " and " if not pri_record_info else ""
             error_msg += f"{separator}secondary identifier '{secondary_identifier}'"
 
         logger.error(error_msg)
         return {"statusCode": 500, "body": json.dumps({"error": error_msg})}
-
-    # Unpack the tuples
-    pri_alias_dns_name, pri_alias_hosted_zone_id = pri_alias_info
-    sec_alias_dns_name, sec_alias_hosted_zone_id = sec_alias_info
 
     # Update weights based on alarm state
     success = True
@@ -294,16 +324,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             record_type,
             primary_identifier,
             0,
-            pri_alias_dns_name,
-            pri_alias_hosted_zone_id,
+            pri_record_info,
         ) and set_dns_record_weight(
             hosted_zone_id,
             record_set_name,
             record_type,
             secondary_identifier,
             1,
-            sec_alias_dns_name,
-            sec_alias_hosted_zone_id,
+            sec_record_info,
         )
     elif new_state == "OK":
         logger.info("OK state detected - routing traffic to primary")
@@ -313,16 +341,14 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             record_type,
             primary_identifier,
             1,
-            pri_alias_dns_name,
-            pri_alias_hosted_zone_id,
+            pri_record_info,
         ) and set_dns_record_weight(
             hosted_zone_id,
             record_set_name,
             record_type,
             secondary_identifier,
             0,
-            sec_alias_dns_name,
-            sec_alias_hosted_zone_id,
+            sec_record_info,
         )
     else:
         logger.warning(f"Unhandled alarm state: {new_state} - no action taken")

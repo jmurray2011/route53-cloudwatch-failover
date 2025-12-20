@@ -157,12 +157,12 @@ class TestValidateSnsMessage:
         assert result == "INSUFFICIENT_DATA"
 
 
-class TestGetAliasTargetDnsName:
-    """Test alias target DNS name retrieval."""
+class TestGetRecordInfo:
+    """Test record info retrieval for all record types."""
 
     @patch("lambda_function.route53_client")
-    def test_successful_retrieval(self, mock_client):
-        """Test successful retrieval of alias target."""
+    def test_successful_alias_retrieval(self, mock_client):
+        """Test successful retrieval of ALIAS record."""
         mock_paginator = MagicMock()
         mock_client.get_paginator.return_value = mock_paginator
         mock_paginator.paginate.return_value = [
@@ -181,28 +181,16 @@ class TestGetAliasTargetDnsName:
             }
         ]
 
-        result = lambda_function.get_alias_target_dns_name(
-            "Z123", "example.com.", "primary", "A"
-        )
+        result = lambda_function.get_record_info("Z123", "example.com.", "primary", "A")
 
-        assert result == ("alias.example.com.", "Z987654321")
-
-    @patch("lambda_function.route53_client")
-    def test_record_not_found(self, mock_client):
-        """Test when record is not found."""
-        mock_paginator = MagicMock()
-        mock_client.get_paginator.return_value = mock_paginator
-        mock_paginator.paginate.return_value = [{"ResourceRecordSets": []}]
-
-        result = lambda_function.get_alias_target_dns_name(
-            "Z123", "example.com.", "primary", "A"
-        )
-
-        assert result is None
+        assert result is not None
+        assert result.is_alias is True
+        assert result.alias_dns_name == "alias.example.com."
+        assert result.alias_hosted_zone_id == "Z987654321"
 
     @patch("lambda_function.route53_client")
-    def test_no_alias_target(self, mock_client):
-        """Test when record exists but has no AliasTarget."""
+    def test_successful_standard_a_record(self, mock_client):
+        """Test successful retrieval of standard A record."""
         mock_paginator = MagicMock()
         mock_client.get_paginator.return_value = mock_paginator
         mock_paginator.paginate.return_value = [
@@ -212,15 +200,56 @@ class TestGetAliasTargetDnsName:
                         "Name": "example.com.",
                         "Type": "A",
                         "SetIdentifier": "primary",
+                        "TTL": 300,
                         "ResourceRecords": [{"Value": "1.2.3.4"}],
                     }
                 ]
             }
         ]
 
-        result = lambda_function.get_alias_target_dns_name(
-            "Z123", "example.com.", "primary", "A"
+        result = lambda_function.get_record_info("Z123", "example.com.", "primary", "A")
+
+        assert result is not None
+        assert result.is_alias is False
+        assert result.resource_records == ["1.2.3.4"]
+        assert result.ttl == 300
+
+    @patch("lambda_function.route53_client")
+    def test_successful_cname_record(self, mock_client):
+        """Test successful retrieval of CNAME record."""
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [
+            {
+                "ResourceRecordSets": [
+                    {
+                        "Name": "www.example.com.",
+                        "Type": "CNAME",
+                        "SetIdentifier": "primary",
+                        "TTL": 600,
+                        "ResourceRecords": [{"Value": "target.example.com."}],
+                    }
+                ]
+            }
+        ]
+
+        result = lambda_function.get_record_info(
+            "Z123", "www.example.com.", "primary", "CNAME"
         )
+
+        assert result is not None
+        assert result.is_alias is False
+        assert result.resource_records == ["target.example.com."]
+        assert result.ttl == 600
+
+    @patch("lambda_function.route53_client")
+    def test_record_not_found(self, mock_client):
+        """Test when record is not found."""
+        mock_paginator = MagicMock()
+        mock_client.get_paginator.return_value = mock_paginator
+        mock_paginator.paginate.return_value = [{"ResourceRecordSets": []}]
+
+        result = lambda_function.get_record_info("Z123", "example.com.", "primary", "A")
 
         assert result is None
 
@@ -246,20 +275,18 @@ class TestGetAliasTargetDnsName:
             },
         ]
 
-        result = lambda_function.get_alias_target_dns_name(
-            "Z123", "example.com.", "primary", "A"
-        )
+        result = lambda_function.get_record_info("Z123", "example.com.", "primary", "A")
 
-        assert result == ("alias.example.com.", "Z987654321")
+        assert result is not None
+        assert result.is_alias is True
+        assert result.alias_dns_name == "alias.example.com."
 
     @patch("lambda_function.route53_client")
     def test_api_error(self, mock_client):
         """Test handling of API errors."""
         mock_client.get_paginator.side_effect = Exception("API Error")
 
-        result = lambda_function.get_alias_target_dns_name(
-            "Z123", "example.com.", "primary", "A"
-        )
+        result = lambda_function.get_record_info("Z123", "example.com.", "primary", "A")
 
         assert result is None
 
@@ -268,26 +295,90 @@ class TestSetDnsRecordWeight:
     """Test DNS record weight updates."""
 
     @patch("lambda_function.route53_client")
-    def test_successful_weight_update(self, mock_client):
-        """Test successful weight update."""
+    def test_successful_alias_weight_update(self, mock_client):
+        """Test successful weight update for ALIAS record."""
         mock_client.change_resource_record_sets.return_value = {
             "ChangeInfo": {"Id": "change-123", "Status": "PENDING"}
         }
 
+        record_info = lambda_function.RecordInfo(
+            is_alias=True,
+            alias_dns_name="alias.example.com.",
+            alias_hosted_zone_id="Z987",
+        )
+
         result = lambda_function.set_dns_record_weight(
-            "Z123", "example.com.", "A", "primary", 1, "alias.example.com.", "Z987"
+            "Z123", "example.com.", "A", "primary", 1, record_info
         )
 
         assert result is True
         mock_client.change_resource_record_sets.assert_called_once()
+        call_args = mock_client.change_resource_record_sets.call_args
+        record_set = call_args[1]["ChangeBatch"]["Changes"][0]["ResourceRecordSet"]
+        assert "AliasTarget" in record_set
+        assert record_set["AliasTarget"]["DNSName"] == "alias.example.com."
+
+    @patch("lambda_function.route53_client")
+    def test_successful_standard_record_weight_update(self, mock_client):
+        """Test successful weight update for standard A record."""
+        mock_client.change_resource_record_sets.return_value = {
+            "ChangeInfo": {"Id": "change-123", "Status": "PENDING"}
+        }
+
+        record_info = lambda_function.RecordInfo(
+            is_alias=False,
+            resource_records=["1.2.3.4"],
+            ttl=300,
+        )
+
+        result = lambda_function.set_dns_record_weight(
+            "Z123", "example.com.", "A", "primary", 1, record_info
+        )
+
+        assert result is True
+        mock_client.change_resource_record_sets.assert_called_once()
+        call_args = mock_client.change_resource_record_sets.call_args
+        record_set = call_args[1]["ChangeBatch"]["Changes"][0]["ResourceRecordSet"]
+        assert "ResourceRecords" in record_set
+        assert record_set["ResourceRecords"] == [{"Value": "1.2.3.4"}]
+        assert record_set["TTL"] == 300
+
+    @patch("lambda_function.route53_client")
+    def test_successful_cname_weight_update(self, mock_client):
+        """Test successful weight update for CNAME record."""
+        mock_client.change_resource_record_sets.return_value = {
+            "ChangeInfo": {"Id": "change-123", "Status": "PENDING"}
+        }
+
+        record_info = lambda_function.RecordInfo(
+            is_alias=False,
+            resource_records=["target.example.com."],
+            ttl=600,
+        )
+
+        result = lambda_function.set_dns_record_weight(
+            "Z123", "www.example.com.", "CNAME", "primary", 1, record_info
+        )
+
+        assert result is True
+        call_args = mock_client.change_resource_record_sets.call_args
+        record_set = call_args[1]["ChangeBatch"]["Changes"][0]["ResourceRecordSet"]
+        assert record_set["Type"] == "CNAME"
+        assert record_set["ResourceRecords"] == [{"Value": "target.example.com."}]
 
     @patch("lambda_function.route53_client")
     def test_api_error(self, mock_client):
         """Test handling of API errors during weight update."""
         mock_client.change_resource_record_sets.side_effect = Exception("API Error")
 
+        record_info = lambda_function.RecordInfo(
+            is_alias=True,
+            alias_dns_name="alias.example.com.",
+            alias_hosted_zone_id="Z987",
+        )
+
         result = lambda_function.set_dns_record_weight(
-            "Z123", "example.com.", "A", "primary", 1, "alias.example.com.", "Z987"
+            "Z123", "example.com.", "A", "primary", 1, record_info
         )
 
         assert result is False
@@ -297,14 +388,22 @@ class TestLambdaHandler:
     """Test the main Lambda handler function."""
 
     @patch("lambda_function.set_dns_record_weight")
-    @patch("lambda_function.get_alias_target_dns_name")
+    @patch("lambda_function.get_record_info")
     def test_alarm_state_switches_to_secondary(
-        self, mock_get_alias, mock_set_weight, env_vars, alarm_event
+        self, mock_get_record, mock_set_weight, env_vars, alarm_event
     ):
         """Test that ALARM state switches traffic to secondary."""
-        mock_get_alias.side_effect = [
-            ("primary.example.com.", "Z111"),
-            ("secondary.example.com.", "Z222"),
+        mock_get_record.side_effect = [
+            lambda_function.RecordInfo(
+                is_alias=True,
+                alias_dns_name="primary.example.com.",
+                alias_hosted_zone_id="Z111",
+            ),
+            lambda_function.RecordInfo(
+                is_alias=True,
+                alias_dns_name="secondary.example.com.",
+                alias_hosted_zone_id="Z222",
+            ),
         ]
         mock_set_weight.return_value = True
 
@@ -321,14 +420,22 @@ class TestLambdaHandler:
         assert calls[1][0][4] == 1  # weight for secondary
 
     @patch("lambda_function.set_dns_record_weight")
-    @patch("lambda_function.get_alias_target_dns_name")
+    @patch("lambda_function.get_record_info")
     def test_ok_state_switches_to_primary(
-        self, mock_get_alias, mock_set_weight, env_vars, ok_event
+        self, mock_get_record, mock_set_weight, env_vars, ok_event
     ):
         """Test that OK state switches traffic to primary."""
-        mock_get_alias.side_effect = [
-            ("primary.example.com.", "Z111"),
-            ("secondary.example.com.", "Z222"),
+        mock_get_record.side_effect = [
+            lambda_function.RecordInfo(
+                is_alias=True,
+                alias_dns_name="primary.example.com.",
+                alias_hosted_zone_id="Z111",
+            ),
+            lambda_function.RecordInfo(
+                is_alias=True,
+                alias_dns_name="secondary.example.com.",
+                alias_hosted_zone_id="Z222",
+            ),
         ]
         mock_set_weight.return_value = True
 
@@ -344,16 +451,16 @@ class TestLambdaHandler:
         # Secondary should be set to 0
         assert calls[1][0][4] == 0  # weight for secondary
 
-    @patch("lambda_function.get_alias_target_dns_name")
-    def test_missing_env_variable(self, mock_get_alias, alarm_event):
+    @patch("lambda_function.get_record_info")
+    def test_missing_env_variable(self, mock_get_record, alarm_event):
         """Test error handling when environment variable is missing."""
         response = lambda_function.lambda_handler(alarm_event, None)
 
         assert response["statusCode"] == 500
         assert "Configuration error" in response["body"]
 
-    @patch("lambda_function.get_alias_target_dns_name")
-    def test_invalid_event_structure(self, mock_get_alias, env_vars):
+    @patch("lambda_function.get_record_info")
+    def test_invalid_event_structure(self, mock_get_record, env_vars):
         """Test error handling for invalid event structure."""
         invalid_event = {"invalid": "structure"}
 
@@ -362,25 +469,33 @@ class TestLambdaHandler:
         assert response["statusCode"] == 400
         assert "Invalid event structure" in response["body"]
 
-    @patch("lambda_function.get_alias_target_dns_name")
-    def test_alias_lookup_failure(self, mock_get_alias, env_vars, alarm_event):
-        """Test error handling when alias lookup fails."""
-        mock_get_alias.return_value = None
+    @patch("lambda_function.get_record_info")
+    def test_record_lookup_failure(self, mock_get_record, env_vars, alarm_event):
+        """Test error handling when record lookup fails."""
+        mock_get_record.return_value = None
 
         response = lambda_function.lambda_handler(alarm_event, None)
 
         assert response["statusCode"] == 500
-        assert "Failed to retrieve alias DNS information" in response["body"]
+        assert "Failed to retrieve record information" in response["body"]
 
     @patch("lambda_function.set_dns_record_weight")
-    @patch("lambda_function.get_alias_target_dns_name")
+    @patch("lambda_function.get_record_info")
     def test_weight_update_failure(
-        self, mock_get_alias, mock_set_weight, env_vars, alarm_event
+        self, mock_get_record, mock_set_weight, env_vars, alarm_event
     ):
         """Test error handling when weight update fails."""
-        mock_get_alias.side_effect = [
-            ("primary.example.com.", "Z111"),
-            ("secondary.example.com.", "Z222"),
+        mock_get_record.side_effect = [
+            lambda_function.RecordInfo(
+                is_alias=True,
+                alias_dns_name="primary.example.com.",
+                alias_hosted_zone_id="Z111",
+            ),
+            lambda_function.RecordInfo(
+                is_alias=True,
+                alias_dns_name="secondary.example.com.",
+                alias_hosted_zone_id="Z222",
+            ),
         ]
         mock_set_weight.return_value = False
 
@@ -389,23 +504,59 @@ class TestLambdaHandler:
         assert response["statusCode"] == 500
         assert "Failed to update DNS weights" in response["body"]
 
-    @patch("lambda_function.get_alias_target_dns_name")
-    def test_insufficient_data_state(self, mock_get_alias, env_vars):
+    @patch("lambda_function.get_record_info")
+    def test_insufficient_data_state(self, mock_get_record, env_vars):
         """Test handling of INSUFFICIENT_DATA state."""
         event = {
             "Records": [
                 {"Sns": {"Message": json.dumps({"NewStateValue": "INSUFFICIENT_DATA"})}}
             ]
         }
-        mock_get_alias.side_effect = [
-            ("primary.example.com.", "Z111"),
-            ("secondary.example.com.", "Z222"),
+        mock_get_record.side_effect = [
+            lambda_function.RecordInfo(
+                is_alias=True,
+                alias_dns_name="primary.example.com.",
+                alias_hosted_zone_id="Z111",
+            ),
+            lambda_function.RecordInfo(
+                is_alias=True,
+                alias_dns_name="secondary.example.com.",
+                alias_hosted_zone_id="Z222",
+            ),
         ]
 
         response = lambda_function.lambda_handler(event, None)
 
         assert response["statusCode"] == 200
         assert "No action taken" in response["body"]
+
+    @patch("lambda_function.set_dns_record_weight")
+    @patch("lambda_function.get_record_info")
+    def test_standard_a_record_failover(
+        self, mock_get_record, mock_set_weight, env_vars, alarm_event
+    ):
+        """Test failover with standard A records (not ALIAS)."""
+        mock_get_record.side_effect = [
+            lambda_function.RecordInfo(
+                is_alias=False,
+                resource_records=["1.2.3.4"],
+                ttl=300,
+            ),
+            lambda_function.RecordInfo(
+                is_alias=False,
+                resource_records=["5.6.7.8"],
+                ttl=300,
+            ),
+        ]
+        mock_set_weight.return_value = True
+
+        response = lambda_function.lambda_handler(alarm_event, None)
+
+        assert response["statusCode"] == 200
+        # Verify RecordInfo was passed correctly
+        calls = mock_set_weight.call_args_list
+        assert calls[0][0][5].is_alias is False
+        assert calls[0][0][5].resource_records == ["1.2.3.4"]
 
 
 if __name__ == "__main__":
