@@ -1,165 +1,82 @@
 # AWS Route 53 CloudWatch Failover
 
-This project provides automated DNS failover for AWS Route 53 using weighted routing policies. The Lambda function is triggered by CloudWatch alarms and automatically adjusts DNS record weights to route traffic between primary and secondary resources based on health status.
+Automated DNS failover for AWS Route 53 using weighted routing policies. A Lambda function triggered by CloudWatch alarms adjusts DNS record weights to route traffic between primary and secondary resources based on health status.
 
 ## Features
 
-- **Dynamic DNS Weight Adjustment**: Automatically adjust the weight of DNS records to reroute traffic between primary and secondary resources based on system health.
-- **Comprehensive Logging**: Structured logging for tracking operations and debugging issues.
-- **AWS Integration**: Designed to work with AWS Lambda, Route53, and SNS messages.
-- **Robust Error Handling**: Validates environment variables, SNS messages, and handles API errors gracefully.
-- **Type Safety**: Full type hints for better IDE support and error detection.
-- **Pagination Support**: Handles large Route53 hosted zones with automatic pagination.
-- **Well Tested**: Comprehensive unit test suite with 80%+ code coverage.
+- **Multi-Record Type Support**: Works with ALIAS, A, AAAA, and CNAME records
+- **Dynamic DNS Weight Adjustment**: Automatically reroutes traffic based on alarm state
+- **Terraform Deployment**: Infrastructure as Code for repeatable deployments
+- **Comprehensive Logging**: Structured logging for debugging
+- **Robust Error Handling**: Validates configuration and handles API errors gracefully
+- **Well Tested**: Unit test suite with 80%+ code coverage
 
 ## Prerequisites
 
-Before you deploy this script, ensure you have:
-
-- AWS account with access to Route53, Lambda, and CloudWatch.
-- The necessary permissions to create and manage Lambda functions and Route53 records.
-- A lambda function with the necessary permissions to modify Route53 records.
-- A DNS record set in Route53 with the desired primary and secondary resources.
-  - Ensure that the record set is a weighted routing policy.
-  - The primary and secondary resources should have different weights (e.g. 0 and 1, where 0 is the secondary resource and 1 is the primary resource).
-    - Note that records weighted 0 will not receive traffic.
-  - The primary and secondary resources should have unique identifiers.
-
-### IAM Permissions
-
-Ensure that the Lambda function has the necessary permissions to modify Route53 records. You can attach the following policy to a role and assign it to the Lambda.
-
-#### Trust Policy
-
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Principal": {
-                "Service": "lambda.amazonaws.com"
-            },
-            "Action": "sts:AssumeRole"
-        }
-    ]
-}
-```
-
-#### Permissions Policy
-
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "route53:ListResourceRecordSets",
-                "route53:ChangeResourceRecordSets"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "logs:CreateLogGroup",
-                "logs:CreateLogStream",
-                "logs:PutLogEvents"
-            ],
-            "Resource": "arn:aws:logs:*:*:*"
-        }
-    ]
-}
-```
-
-## Environment Variables
-
-Set the following local environment variables. You can use the example.env, just rename to .env and source it. FUNCTION_NAME is the name of the lambda function you created in the AWS console.
-
-- `FUNCTION_NAME=test-failover-dns`
-- `SOURCE_FILE=lambda_function.py`
-- `AWS_PROFILE=default`
-- `AWS_REGION=us-east-1`
-
-Set the following environment variables in your Lambda configuration:
-
-- `HOSTED_ZONE_ID`: The ID of the hosted zone in AWS Route53.
-- `RECORD_SET_NAME`: The name of the record set (ensure this ends with a dot).
-- `PRIMARY_IDENTIFIER`: Identifier for the primary resource.
-- `SECONDARY_IDENTIFIER`: Identifier for the secondary resource.
-- `RECORD_TYPE`: The type of DNS record, e.g., A, AAAA, CNAME.
-
-## Development
-
-### Setup Development Environment
-
-1. Clone the repository
-2. Install development dependencies:
-   ```bash
-   pip install -r requirements-dev.txt
-   ```
-
-### Running Tests
-
-Run the unit tests with coverage:
-```bash
-make test
-```
-
-Or run pytest directly:
-```bash
-pytest
-```
-
-### Code Quality
-
-Run linting and type checks:
-```bash
-make lint
-```
-
-Individual tools:
-```bash
-black lambda_function.py test_lambda_function.py  # Format code
-flake8 lambda_function.py                         # Check style
-mypy lambda_function.py                           # Type checking
-```
-
-### Test Coverage
-
-The project includes comprehensive unit tests with 80%+ coverage requirement. Coverage reports are generated in HTML format in the `htmlcov/` directory.
+- AWS account with Route53, Lambda, and CloudWatch access
+- Terraform >= 1.0 (for IaC deployment)
+- A Route53 hosted zone with weighted routing records configured:
+  - Primary and secondary resources with unique SetIdentifiers
+  - Initial weights (e.g., primary=1, secondary=0)
 
 ## Deployment
 
-1. Package the script and any dependencies into a deployment package.
-2. Create a new Lambda function in the AWS Management Console.
-3. Configure the trigger to be the desired CloudWatch alarm.
-4. Set the necessary environment variables in the Lambda configuration.
-5. Upload and deploy the package.
+### Using Terraform
 
-### Quick Deployment
-
-Using the Makefile:
-```bash
-# Create .env file from example
-cp example.env .env
-# Edit .env with your values
-
-# Deploy to AWS
-make deploy
-
-# Or step by step
-make zip     # Create deployment package
-make deploy  # Upload to Lambda
-make clean   # Clean up artifacts
+1. Create a `terraform.tfvars` file in `terraform/environments/prod/`:
+```hcl
+aws_region           = "us-east-1"
+function_name        = "route53-failover-prod"
+hosted_zone_id       = "YOUR_HOSTED_ZONE_ID"
+record_set_name      = "example.com."
+primary_identifier   = "primary"
+secondary_identifier = "secondary"
+record_type          = "A"  # or CNAME, AAAA, etc.
 ```
+
+2. Deploy:
+```bash
+cd terraform/environments/prod
+export AWS_PROFILE=your-profile
+terraform init
+terraform apply
+```
+
+3. Connect the SNS topic (from Terraform output) to your CloudWatch alarms.
+
+### Manual Deployment
+
+1. Create a Lambda function with Python 3.10+ runtime
+2. Set environment variables:
+   - `HOSTED_ZONE_ID`: Route53 hosted zone ID
+   - `RECORD_SET_NAME`: DNS record name (with trailing dot)
+   - `PRIMARY_IDENTIFIER`: SetIdentifier for primary record
+   - `SECONDARY_IDENTIFIER`: SetIdentifier for secondary record
+   - `RECORD_TYPE`: Record type (A, AAAA, CNAME)
+3. Attach IAM policy with `route53:ListResourceRecordSets` and `route53:ChangeResourceRecordSets`
+4. Subscribe to SNS topic triggered by CloudWatch alarms
 
 ## Usage
 
-Once deployed and configured with the correct triggers and environment variables, the Lambda function will automatically run and adjust DNS weights in response to CloudWatch alarm state changes.
+The Lambda responds to CloudWatch alarm state changes via SNS:
 
-- **ALARM State**: Redirects traffic from the primary to the secondary resource by adjusting weights.
-- **OK State**: Shifts traffic back to the primary resource.
+- **ALARM**: Routes traffic to secondary (primary weight=0, secondary weight=1)
+- **OK**: Routes traffic to primary (primary weight=1, secondary weight=0)
+- **INSUFFICIENT_DATA**: No action taken
 
-Ensure that your CloudWatch alarms are correctly set up to trigger the function based on your specific use case.
+## Development
+
+```bash
+# Install dependencies
+pip install -r requirements-dev.txt
+
+# Run tests
+make test
+
+# Run linting
+make lint
+```
+
+## License
+
+MIT
