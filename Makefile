@@ -24,7 +24,7 @@ test:
 	@echo "Running unit tests..."
 	pytest
 
-# Target for linting
+# Target for linting (all linters, non-strict for local development)
 lint:
 	@echo "Running code quality checks..."
 	@echo "Running black..."
@@ -33,6 +33,16 @@ lint:
 	flake8 lambda_function.py test_lambda_function.py --max-line-length=100 || true
 	@echo "Running mypy..."
 	mypy lambda_function.py || true
+
+# Individual lint targets (strict, for CI)
+lint-black:
+	black --check lambda_function.py test_lambda_function.py
+
+lint-flake8:
+	flake8 lambda_function.py test_lambda_function.py --max-line-length=100
+
+lint-mypy:
+	mypy lambda_function.py
 
 # Check if .env file exists
 check-env:
@@ -63,4 +73,4 @@ clean:
 	find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 
-.PHONY: all help test lint check-env zip deploy clean
+.PHONY: all help test lint lint-black lint-flake8 lint-mypy check-env zip deploy clean
